@@ -1,0 +1,197 @@
+import CoreLocation
+
+enum OverpassError: Error {
+    case invalidURL
+    case noData
+}
+
+struct OverpassService {
+    // タイムアウト付き URLSession（35秒）
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 35
+        config.timeoutIntervalForResource = 35
+        return URLSession(configuration: config)
+    }()
+
+    // 並列リクエスト用ミラー一覧（全部同時に叩いて最速を使う）
+    private static let endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.osm.jp/api/interpreter",           // 日本ミラー
+        "https://overpass.openstreetmap.ru/api/interpreter",  // ロシアミラー
+    ]
+
+    // 簡易キャッシュ（2分間・100m以内は再利用）
+    private struct CacheEntry {
+        let exits: [StationExit]
+        let timestamp: Date
+        let coordinate: CLLocationCoordinate2D
+    }
+    private static var cache: CacheEntry?
+    private static let cacheDuration: TimeInterval = 120
+    private static let cacheDistanceThreshold: Double = 100
+
+    static func fetchExits(near coordinate: CLLocationCoordinate2D, radius: Int = 500) async throws -> [StationExit] {
+        let userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+        // キャッシュヒット確認
+        if let cached = cache,
+           Date().timeIntervalSince(cached.timestamp) < cacheDuration,
+           userLocation.distance(from: CLLocation(
+               latitude: cached.coordinate.latitude,
+               longitude: cached.coordinate.longitude)
+           ) < cacheDistanceThreshold {
+            return cached.exits
+        }
+
+        // [timeout:30] = サーバー側タイムアウト（URLSession の 35 秒より短め）
+        let query = """
+        [out:json][timeout:30];
+        (
+          node[railway=subway_entrance](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
+          node[railway=entrance](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
+          node[railway=station](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
+        ) -> .nodes;
+        .nodes out body;
+        relation[public_transport=stop_area](bn.nodes);
+        out body;
+        """
+
+        // 全エンドポイントに並列リクエスト → 最初に成功したものを採用
+        let exits = try await withThrowingTaskGroup(of: Result<[StationExit], Error>.self) { group in
+            for endpoint in endpoints {
+                group.addTask {
+                    do {
+                        let result = try await fetchFromEndpoint(endpoint, query: query, userLocation: userLocation)
+                        return .success(result)
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+
+            var lastError: Error = OverpassError.noData
+            for try await result in group {
+                switch result {
+                case .success(let exits):
+                    group.cancelAll()
+                    return exits
+                case .failure(let error):
+                    lastError = error
+                }
+            }
+            throw lastError
+        }
+
+        // キャッシュ更新
+        cache = CacheEntry(exits: exits, timestamp: Date(), coordinate: coordinate)
+        return exits
+    }
+
+    // MARK: - 単一エンドポイントへのリクエスト（POST）
+
+    private static func fetchFromEndpoint(
+        _ endpoint: String,
+        query: String,
+        userLocation: CLLocation
+    ) async throws -> [StationExit] {
+        guard let url = URL(string: endpoint),
+              let body = "data=\(query)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.data(using: .utf8)
+        else { throw OverpassError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (data, response) = try await session.data(for: request)
+
+        // HTTP エラーは失敗扱い
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw OverpassError.noData
+        }
+
+        let overpassResponse = try JSONDecoder().decode(OverpassResponse.self, from: data)
+
+        // stop_area リレーションから「ノードID → 駅名」マップを構築
+        let nodeToStationName: [Int: String] = {
+            var map: [Int: String] = [:]
+            for element in overpassResponse.elements where element.type == "relation" {
+                let name = element.tags["name:ja"] ?? element.tags["name"] ?? ""
+                guard !name.isEmpty else { continue }
+                for member in element.members ?? [] where member.type == "node" {
+                    map[member.ref] = name
+                }
+            }
+            return map
+        }()
+
+        let sorted = overpassResponse.elements
+            .filter { $0.type == "node" }
+            .compactMap { element -> StationExit? in
+                guard let lat = element.lat, let lon = element.lon else { return nil }
+                let railwayType = element.tags["railway"] ?? ""
+                let isStation  = railwayType == "station"
+                let isEntrance = railwayType == "entrance" || railwayType == "subway_entrance"
+                guard isEntrance || isStation else { return nil }
+
+                let dist = userLocation.distance(from: CLLocation(latitude: lat, longitude: lon))
+
+                let ownName = element.tags["name:ja"] ?? element.tags["name"] ?? ""
+                let stationName = nodeToStationName[element.id]
+                    ?? (ownName == "駅" || ownName.isEmpty ? nil : ownName)
+                    ?? "付近の駅"
+
+                return StationExit(
+                    id: element.id,
+                    stationName: stationName,
+                    ref: isEntrance ? element.tags["ref"] : nil,
+                    coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon),
+                    distance: dist,
+                    isStationNode: isStation
+                )
+            }
+            .sorted { $0.distance < $1.distance }
+
+        // 具体的な出口ノードが1件以上あれば駅入口エリアを除外、
+        // 出口ノードがまったくない場合のみフォールバックとして残す
+        let hasEntrances = sorted.contains { !$0.isStationNode }
+        return (hasEntrances ? sorted.filter { !$0.isStationNode } : sorted)
+            .prefix(10)
+            .map { $0 }
+    }
+}
+
+// MARK: - Overpass API レスポンスモデル
+
+private struct OverpassResponse: Decodable {
+    let elements: [OverpassElement]
+}
+
+private struct OverpassElement: Decodable {
+    let type: String
+    let id: Int
+    let lat: Double?
+    let lon: Double?
+    let tags: [String: String]
+    let members: [OverpassMember]?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type    = try c.decode(String.self, forKey: .type)
+        id      = try c.decode(Int.self, forKey: .id)
+        lat     = try c.decodeIfPresent(Double.self, forKey: .lat)
+        lon     = try c.decodeIfPresent(Double.self, forKey: .lon)
+        tags    = (try? c.decodeIfPresent([String: String].self, forKey: .tags)) ?? [:]
+        members = try? c.decodeIfPresent([OverpassMember].self, forKey: .members)
+    }
+
+    enum CodingKeys: String, CodingKey { case type, id, lat, lon, tags, members }
+}
+
+private struct OverpassMember: Decodable {
+    let type: String
+    let ref: Int
+    let role: String
+}

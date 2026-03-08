@@ -1,24 +1,839 @@
-//
-//  ContentView.swift
-//  ExitFinder
-//
-//  Created by 高木祐輝 on 2026/03/01.
-//
-
 import SwiftUI
+import CoreLocation
+import MapKit
 
 struct ContentView: View {
+    @StateObject private var locationManager = LocationManager()
+    @State private var exits: [StationExit] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var cameraPosition: MapCameraPosition = .automatic
+
+    // 手動位置指定モード
+    @State private var isManualMode = false
+    @State private var isFollowingWithHeading = false
+    @State private var mapCameraHeading: Double = 0
+    @State private var manualCoordinate: CLLocationCoordinate2D?
+    @State private var pinnedManualCoordinate: CLLocationCoordinate2D?  // 検索実行時に確定したピン
+    @State private var pinnedLocationName: String?  // 場所検索で確定した場所名
+
+    // ルート
+    @State private var selectedExit: StationExit?
+    @State private var route: MKRoute?
+    @State private var isCalculatingRoute = false
+
+    // 設定
+    @State private var showSettings = false
+
+    // 場所検索
+    @State private var searchText = ""
+    @State private var locationSearchResults: [MKMapItem] = []
+    @State private var isSearchingLocation = false  // 候補リスト表示中かどうか
+
+    var searchCoordinate: CLLocationCoordinate2D? {
+        isManualMode ? manualCoordinate : locationManager.location?.coordinate
+    }
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        NavigationStack {
+            Group {
+                switch locationManager.authorizationStatus {
+                case .notDetermined:
+                    permissionView
+                case .denied, .restricted:
+                    deniedView
+                default:
+                    mainView
+                }
+            }
+            .navigationTitle("近くの駅出口")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSettings = true } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { await fetchExits() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(isLoading || searchCoordinate == nil)
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "行きたい場所を検索")
+            .task(id: searchText) {
+                await performLocationSearch()
+            }
+        }
+        .onAppear { locationManager.requestLocation() }
+        .onChange(of: locationManager.location) { _, newLocation in
+            if newLocation != nil && exits.isEmpty && !isManualMode {
+                Task { await fetchExits() }
+            }
+            updateHeadingCamera()
+        }
+        .onReceive(locationManager.$heading) { _ in
+            updateHeadingCamera()
+        }
+    }
+
+    // MARK: - メインビュー
+
+    private var mainView: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                // コンテンツが少なければ縮み、多ければ最大 50% まで伸びる
+                exitListView
+                    .frame(maxHeight: geometry.size.height * 0.4)
+                // マップは残りをすべて使う（最低 60%）
+                mapView
+                    .frame(minHeight: geometry.size.height * 0.6)
+                    .frame(maxHeight: .infinity)
+            }
+        }
+    }
+
+    // MARK: - マップ
+
+    private var mapView: some View {
+        ZStack {
+            Map(position: $cameraPosition) {
+                // 現在地（カスタム：常時コーン表示）
+                if let userLocation = locationManager.location {
+                    Annotation("", coordinate: userLocation.coordinate, anchor: .center) {
+                        UserLocationView(
+                            userHeading: locationManager.heading.map {
+                                $0.trueHeading >= 0 ? $0.trueHeading : $0.magneticHeading
+                            },
+                            mapCameraHeading: mapCameraHeading
+                        )
+                    }
+                    .annotationTitles(.hidden)
+                }
+
+                // 手動指定ピン
+                if let pinCoord = pinnedManualCoordinate {
+                    Annotation("指定した場所", coordinate: pinCoord) {
+                        VStack(spacing: 0) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.red)
+                                    .frame(width: 28, height: 28)
+                                    .shadow(radius: 3)
+                                Image(systemName: "mappin")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                            // ピンの尻尾
+                            Triangle()
+                                .fill(Color.red)
+                                .frame(width: 10, height: 6)
+                        }
+                    }
+                }
+
+                // ルート描画
+                if let route {
+                    MapPolyline(route.polyline)
+                        .stroke(.blue, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                }
+
+                // 出口ピン
+                ForEach(Array(exits.enumerated()), id: \.element.id) { index, exit in
+                    let rank = index + 1
+                    let isSelected = selectedExit?.id == exit.id
+                    let annotationLabel: String = {
+                        if exit.isStationNode { return exit.stationName }
+                        if let ref = exit.ref  { return "\(ref)番出口" }
+                        return exit.stationName  // ref なし → name 自体が出口名
+                    }()
+                    Annotation(annotationLabel, coordinate: exit.coordinate) {
+                        ZStack {
+                            Circle()
+                                .fill(pinColor(for: exit, isSelected: isSelected))
+                                .frame(width: isSelected ? 36 : 28, height: isSelected ? 36 : 28)
+                                .shadow(color: isSelected ? .black.opacity(0.3) : .clear, radius: 4)
+                            if exit.isStationNode {
+                                Image(systemName: "tram.fill")
+                                    .font(.system(size: isSelected ? 18 : 14))
+                                    .foregroundStyle(.white)
+                            } else {
+                                Text(rankLabel(rank))
+                                    .font(.system(size: isSelected ? 14 : 12, weight: .bold))
+                                    .foregroundStyle(isSelected ? .white : .black)
+                            }
+                        }
+                        .animation(.spring(duration: 0.2), value: isSelected)
+                    }
+                }
+            }
+            .onMapCameraChange(frequency: .continuous) { context in
+                mapCameraHeading = context.camera.heading
+                if isManualMode { manualCoordinate = context.region.center }
+            }
+            .mapControlVisibility(.hidden)
+
+            // ボタン類（左上: 手動ピン、右上: 向き追従）
+            VStack {
+                HStack {
+                    Button { toggleManualMode() } label: {
+                        Image(systemName: "mappin")
+                            .font(.system(size: isManualMode ? 20 : 17,
+                                          weight: isManualMode ? .bold : .regular))
+                            .foregroundStyle(isManualMode ? .red : .secondary)
+                            .frame(width: 44, height: 44)
+                            .animation(.spring(duration: 0.2), value: isManualMode)
+                    }
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .padding(.leading, 8)
+                    .padding(.top, 8)
+                    Spacer()
+                    Button { toggleHeadingFollow() } label: {
+                        Image(systemName: isFollowingWithHeading ? "location.north.fill" : "location")
+                            .font(.system(size: 17))
+                            .foregroundStyle(isFollowingWithHeading ? .blue : .secondary)
+                            .frame(width: 44, height: 44)
+                            .animation(.spring(duration: 0.2), value: isFollowingWithHeading)
+                    }
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .disabled(isManualMode)
+                    .padding(.trailing, 8)
+                    .padding(.top, 8)
+                }
+                Spacer()
+            }
+
+            // ルート情報バー
+            if let route, !isManualMode {
+                VStack {
+                    Spacer()
+                    routeInfoBar(route: route)
+                }
+            }
+
+            // ルート計算中インジケーター
+            if isCalculatingRoute {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("ルートを計算中...")
+                            .font(.subheadline)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
+                    .padding(.bottom, 12)
+                }
+            }
+
+            // 手動モード UI
+            if isManualMode {
+                VStack(spacing: 0) {
+                    Image(systemName: "mappin")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundStyle(.red)
+                        .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
+                    Circle()
+                        .fill(Color.black.opacity(0.25))
+                        .frame(width: 6, height: 3)
+                        .blur(radius: 1.5)
+                }
+                .offset(y: -16) // ピン先端を中心に合わせる
+
+                VStack {
+                    Spacer()
+                    Button { Task { await fetchExits() } } label: {
+                        Label("この場所で検索", systemImage: "magnifyingglass")
+                            .foregroundStyle(.black)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(.yellow)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .disabled(isLoading)
+                    .padding(.bottom, 30)
+                }
+            }
+
+            // クレジット
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    Text("© OpenStreetMap contributors")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .padding(4)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(.trailing, 6)
+                        .padding(.bottom, route != nil && !isManualMode ? 76 : 6)
+                }
+            }
+        }
+        // マップタップでキーボードを閉じる
+        .simultaneousGesture(TapGesture().onEnded {
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil, from: nil, for: nil
+            )
+        })
+    }
+
+    // MARK: - ルート情報バー
+
+    private func routeInfoBar(route: MKRoute) -> some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(route.expectedTravelTime.formattedWalkTime, systemImage: "figure.walk")
+                    .font(.headline)
+                Text(String(format: "%.0fm", route.distance))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let exit = selectedExit {
+                Text(exit.isStationNode ? "駅入口" : "\(exit.displayRef)番出口")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+            Spacer()
+            Button {
+                selectedExit = nil
+                self.route = nil
+                // カメラを元に戻す
+                if let coord = searchCoordinate {
+                    cameraPosition = .region(MKCoordinateRegion(
+                        center: coord,
+                        latitudinalMeters: 600,
+                        longitudinalMeters: 600
+                    ))
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+    }
+
+    // MARK: - リスト（ScrollView でコンテンツ量に合わせて縮む）
+
+    private var exitListView: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // 場所検索中は候補リストを表示
+                if isSearchingLocation {
+                    if locationSearchResults.isEmpty {
+                        HStack {
+                            Spacer()
+                            Text("候補なし")
+                                .foregroundStyle(.secondary)
+                                .font(.subheadline)
+                            Spacer()
+                        }
+                        .padding(.vertical, 20)
+                    } else {
+                        ForEach(Array(locationSearchResults.enumerated()), id: \.element) { index, item in
+                            Button {
+                                selectLocation(item)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "mappin.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.red)
+                                        .frame(width: 40)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.name ?? "不明な場所")
+                                            .font(.headline)
+                                            .foregroundStyle(.primary)
+                                        if let address = item.addressRepresentations?.fullAddress(includingRegion: true, singleLine: true) {
+                                            Text(address)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.forward.circle")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.plain)
+                            if index < locationSearchResults.count - 1 {
+                                Divider().padding(.leading, 64)
+                            }
+                        }
+                    }
+                } else if isManualMode {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mappin").foregroundStyle(.red)
+                        if let name = pinnedLocationName {
+                            Text(name)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                        } else {
+                            Text("マップをドラッグして場所を指定し「この場所で検索」を押してください")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.red.opacity(0.05))
+                    Divider()
+                }
+
+                if !isSearchingLocation {
+                    if isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView("出口を検索中...")
+                            Spacer()
+                        }
+                        .padding(.vertical, 20)
+                    } else if let error = errorMessage {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .padding(16)
+                    } else if exits.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("近くに駅出口が見つかりませんでした").foregroundStyle(.secondary)
+                            if let loc = locationManager.location {
+                                Text("現在地: \(loc.coordinate.latitude, specifier: "%.5f"), \(loc.coordinate.longitude, specifier: "%.5f")")
+                                    .font(.caption).foregroundStyle(.tertiary)
+                            } else {
+                                Text("現在地: 取得中...").font(.caption).foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(16)
+                    } else {
+                        ForEach(Array(exits.enumerated()), id: \.element.id) { index, exit in
+                            ExitRow(
+                                exit: exit,
+                                rank: index + 1,
+                                isSelected: selectedExit?.id == exit.id,
+                                isCalculating: isCalculatingRoute && selectedExit?.id == exit.id
+                            ) {
+                                Task { await calculateRoute(to: exit) }
+                            }
+                            if index < exits.count - 1 {
+                                Divider().padding(.leading, 64)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color(UIColor.systemBackground))
+    }
+
+    // MARK: - 許可ビュー
+
+    private var permissionView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "location.circle").font(.system(size: 64)).foregroundStyle(.blue)
+            Text("現在地の使用を許可してください").font(.headline)
+            Text("近くの駅出口を探すために位置情報が必要です")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("位置情報を許可する") { locationManager.requestLocation() }
+                .buttonStyle(.borderedProminent)
         }
         .padding()
     }
+
+    private var deniedView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "location.slash").font(.system(size: 64)).foregroundStyle(.red)
+            Text("位置情報が許可されていません").font(.headline)
+            Text("設定 > ExitFinder から位置情報を許可してください")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("設定を開く") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding()
+    }
+
+    // MARK: - ロジック
+
+    private func pinColor(for exit: StationExit, isSelected: Bool) -> Color {
+        isSelected ? .green : .yellow
+    }
+
+    private func toggleHeadingFollow() {
+        isFollowingWithHeading.toggle()
+        if isFollowingWithHeading {
+            updateHeadingCamera()
+        } else if let coord = locationManager.location?.coordinate {
+            cameraPosition = .region(MKCoordinateRegion(
+                center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+            ))
+        }
+    }
+
+    /// 向き追従モード中にカメラを現在地＋ヘディングに追従させる
+    private func updateHeadingCamera() {
+        guard isFollowingWithHeading,
+              let coord = locationManager.location?.coordinate else { return }
+        let heading: Double = {
+            guard let h = locationManager.heading else { return 0 }
+            return h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
+        }()
+        cameraPosition = .camera(MapCamera(
+            centerCoordinate: coord,
+            distance: 800,
+            heading: heading,
+            pitch: 0
+        ))
+    }
+
+    private func toggleManualMode() {
+        selectedExit = nil
+        route = nil
+        pinnedManualCoordinate = nil
+        pinnedLocationName = nil
+        isFollowingWithHeading = false
+        isManualMode.toggle()
+        if !isManualMode {
+            exits = []
+            if let location = locationManager.location {
+                cameraPosition = .region(MKCoordinateRegion(
+                    center: location.coordinate,
+                    latitudinalMeters: 600,
+                    longitudinalMeters: 600
+                ))
+                Task { await fetchExits() }
+            }
+        } else {
+            if let location = locationManager.location {
+                manualCoordinate = location.coordinate
+            }
+        }
+    }
+
+    private func calculateRoute(to exit: StationExit) async {
+        // 同じ出口をタップ → ルートをクリア
+        if selectedExit?.id == exit.id {
+            selectedExit = nil
+            route = nil
+        let resetCoord = isManualMode ? pinnedManualCoordinate : locationManager.location?.coordinate
+            if let coord = resetCoord {
+                cameraPosition = .region(MKCoordinateRegion(
+                    center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+                ))
+            }
+            return
+        }
+
+        // 手動モードはピン確定座標、GPSモードは現在地を出発地にする
+        let userCoord = isManualMode ? pinnedManualCoordinate : locationManager.location?.coordinate
+        guard let userCoord else { return }
+
+        selectedExit = exit
+        route = nil
+        isFollowingWithHeading = false
+        isCalculatingRoute = true
+
+        let request = MKDirections.Request()
+        request.source = MKMapItem(
+            location: CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude),
+            address: nil
+        )
+        request.destination = MKMapItem(
+            location: CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude),
+            address: nil
+        )
+        request.transportType = .walking
+
+        do {
+            let response = try await MKDirections(request: request).calculate()
+            route = response.routes.first
+            if let polyline = response.routes.first?.polyline {
+                let rect = polyline.boundingMapRect
+                // 余白を加えてカメラをフィット
+                let padded = rect.insetBy(
+                    dx: -rect.width * 0.4,
+                    dy: -rect.height * 0.4
+                )
+                cameraPosition = .rect(padded)
+            }
+        } catch {
+            // ルート取得失敗時は出口を中心に表示
+            cameraPosition = .region(MKCoordinateRegion(
+                center: exit.coordinate, latitudinalMeters: 600, longitudinalMeters: 600
+            ))
+        }
+        isCalculatingRoute = false
+    }
+
+    private func performLocationSearch() async {
+        guard !searchText.isEmpty else {
+            locationSearchResults = []
+            isSearchingLocation = false
+            return
+        }
+        // デバウンス: 入力が止まってから 350ms 後に検索
+        try? await Task.sleep(for: .milliseconds(350))
+        guard !Task.isCancelled else { return }
+
+        isSearchingLocation = true
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = searchText
+        request.resultTypes = [.address, .pointOfInterest]
+        if let coord = locationManager.location?.coordinate {
+            request.region = MKCoordinateRegion(
+                center: coord, latitudinalMeters: 100_000, longitudinalMeters: 100_000
+            )
+        }
+        if let response = try? await MKLocalSearch(request: request).start() {
+            locationSearchResults = response.mapItems
+        } else {
+            locationSearchResults = []
+        }
+    }
+
+    private func selectLocation(_ item: MKMapItem) {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
+        let coordinate = item.location.coordinate
+        // searchText はそのまま保持（ユーザーが自分で消す）
+        locationSearchResults = []
+        isSearchingLocation = false
+        isManualMode = true
+        isFollowingWithHeading = false
+        pinnedLocationName = item.name
+        manualCoordinate = coordinate
+        pinnedManualCoordinate = coordinate
+        cameraPosition = .region(MKCoordinateRegion(
+            center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
+        ))
+        Task { await fetchExits() }
+    }
+
+    private func fetchExits() async {
+        guard let coordinate = searchCoordinate else {
+            if !isManualMode { locationManager.requestLocation() }
+            return
+        }
+        selectedExit = nil
+        route = nil
+        isFollowingWithHeading = false
+        isLoading = true
+        errorMessage = nil
+        do {
+            exits = try await OverpassService.fetchExits(near: coordinate)
+            // 手動モードのとき検索座標をピンとして確定
+            if isManualMode { pinnedManualCoordinate = coordinate }
+            cameraPosition = .region(MKCoordinateRegion(
+                center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
+            ))
+        } catch {
+            // 失敗したら 2 秒待って 1 回だけ自動リトライ（瞬断対策）
+            try? await Task.sleep(for: .seconds(2))
+            do {
+                exits = try await OverpassService.fetchExits(near: coordinate)
+                if isManualMode { pinnedManualCoordinate = coordinate }
+                cameraPosition = .region(MKCoordinateRegion(
+                    center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
+                ))
+            } catch {
+                errorMessage = "データの取得に失敗しました。通信状況を確認してください。"
+            }
+        }
+        isLoading = false
+    }
 }
 
-#Preview {
-    ContentView()
+// MARK: - ランクラベル（A, B, C, ...）
+
+private func rankLabel(_ rank: Int) -> String {
+    guard rank >= 1, rank <= 26 else { return "\(rank)" }
+    return String(UnicodeScalar(64 + rank)!)
+}
+
+// MARK: - Triangle Shape（ピンの尻尾）
+
+struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - ユーザー位置（青丸 + 方向コーン）
+
+struct UserLocationView: View {
+    let userHeading: Double?
+    let mapCameraHeading: Double
+
+    private let dotSize: CGFloat = 22
+    private let coneSize: CGFloat = 120
+
+    var body: some View {
+        ZStack {
+            if let heading = userHeading, heading >= 0 {
+                HeadingConeShape()
+                    .fill(
+                        RadialGradient(
+                            colors: [.purple.opacity(0.7), .purple.opacity(0.2), .clear],
+                            center: .center,
+                            startRadius: dotSize / 2,
+                            endRadius: coneSize / 2
+                        )
+                    )
+                    .frame(width: coneSize, height: coneSize)
+                    .rotationEffect(.degrees(heading - mapCameraHeading))
+            }
+            Circle()
+                .fill(.white)
+                .frame(width: dotSize, height: dotSize)
+            Circle()
+                .fill(.blue)
+                .frame(width: dotSize - 4, height: dotSize - 4)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// 上方向（12時）を中心とした 70° の扇形
+struct HeadingConeShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        // ±35° = 70° の扇形。中心は -90°（画面上方向）
+        let halfAngle = 35.0
+        var path = Path()
+        path.move(to: center)
+        // clockwise: false → 短い 70° 弧（向いている方向）
+        path.addArc(
+            center: center,
+            radius: radius,
+            startAngle: .degrees(-90 - halfAngle),
+            endAngle: .degrees(-90 + halfAngle),
+            clockwise: false
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - 時間フォーマット
+
+private extension TimeInterval {
+    var formattedWalkTime: String {
+        let minutes = Int(self / 60)
+        if minutes < 1 { return "1分以内" }
+        if minutes < 60 { return "\(minutes)分" }
+        return "\(minutes / 60)時間\(minutes % 60)分"
+    }
+}
+
+// MARK: - 出口行
+
+struct ExitRow: View {
+    let exit: StationExit
+    let rank: Int
+    let isSelected: Bool
+    let isCalculating: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? Color.green : Color.yellow)
+                        .frame(width: 40, height: 40)
+                    if isCalculating {
+                        ProgressView().tint(.white)
+                    } else {
+                        if exit.isStationNode {
+                            Image(systemName: "tram.fill")
+                                .font(.system(size: 18))
+                                .foregroundStyle(.white)
+                        } else {
+                            Text(rankLabel(rank))
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundStyle(isSelected ? .white : .black)
+                        }
+                    }
+                }
+                .animation(.spring(duration: 0.2), value: isSelected)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    // サブタイトル（駅名 or "駅出口"）
+                    Text(exit.isStationNode || exit.ref != nil ? exit.stationName : "駅出口")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    // メインラベル
+                    if exit.isStationNode {
+                        // 駅ノード
+                        Text("駅入口")
+                            .font(.headline)
+                            .foregroundStyle(isSelected ? .green : .secondary)
+                    } else if let ref = exit.ref {
+                        // ref あり → "A5b出口" のように表示
+                        Text("\(ref)番出口")
+                            .font(.headline)
+                            .foregroundStyle(isSelected ? .green : .primary)
+                    } else {
+                        // ref なし → name タグ自体が出口名（"仲町口", "West exit" など）
+                        Text(exit.stationName)
+                            .font(.headline)
+                            .foregroundStyle(isSelected ? .green : .primary)
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    if rank == 1 && !isSelected {
+                        Text("最寄り")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue)
+                            .clipShape(Capsule())
+                    }
+                    Text(exit.distanceText)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(isSelected ? .green : .primary)
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(isSelected ? Color.green.opacity(0.08) : Color.clear)
+        .padding(.horizontal, 4)
+    }
 }
