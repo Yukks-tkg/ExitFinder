@@ -11,7 +11,8 @@ struct ContentView: View {
 
     // 手動位置指定モード
     @State private var isManualMode = false
-    @State private var isFollowingWithHeading = false
+    @State private var isFollowingLocation = false          // 現在地フォローモード
+    @State private var lastProgrammaticCameraUpdate = Date.distantPast  // プログラム操作 vs ユーザー操作の区別
     @State private var mapCameraHeading: Double = 0
     @State private var manualCoordinate: CLLocationCoordinate2D?
     @State private var pinnedManualCoordinate: CLLocationCoordinate2D?  // 検索実行時に確定したピン
@@ -77,11 +78,15 @@ struct ContentView: View {
             if newLocation != nil && exits.isEmpty && !isManualMode {
                 Task { await fetchExits() }
             }
-            updateHeadingCamera()
+            // フォローモード中は現在地に追従
+            if isFollowingLocation, let coord = newLocation?.coordinate {
+                setCamera(.region(MKCoordinateRegion(
+                    center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+                )))
+            }
         }
         .onReceive(locationManager.$heading) { _ in
             applyInitialHeadingIfNeeded()
-            updateHeadingCamera()
         }
     }
 
@@ -164,7 +169,7 @@ struct ContentView: View {
                             if exit.isStationNode {
                                 Image(systemName: "tram.fill")
                                     .font(.system(size: isSelected ? 18 : 14))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.black)
                             } else {
                                 Text(rankLabel(rank))
                                     .font(.system(size: isSelected ? 14 : 12, weight: .bold))
@@ -178,6 +183,11 @@ struct ContentView: View {
             .onMapCameraChange(frequency: .continuous) { context in
                 mapCameraHeading = context.camera.heading
                 if isManualMode { manualCoordinate = context.region.center }
+                // プログラム操作から 0.8 秒以上経過していればユーザー操作 → フォロー解除
+                if isFollowingLocation,
+                   Date().timeIntervalSince(lastProgrammaticCameraUpdate) > 0.8 {
+                    isFollowingLocation = false
+                }
             }
             .mapControlVisibility(.hidden)
 
@@ -196,12 +206,12 @@ struct ContentView: View {
                     .padding(.leading, 8)
                     .padding(.top, 8)
                     Spacer()
-                    Button { toggleHeadingFollow() } label: {
-                        Image(systemName: isFollowingWithHeading ? "location.north.fill" : "location")
+                    Button { recenterOnUser() } label: {
+                        Image(systemName: isFollowingLocation ? "location.fill" : "location")
                             .font(.system(size: 17))
-                            .foregroundStyle(isFollowingWithHeading ? .blue : .secondary)
+                            .foregroundStyle(isFollowingLocation ? .blue : .secondary)
                             .frame(width: 44, height: 44)
-                            .animation(.spring(duration: 0.2), value: isFollowingWithHeading)
+                            .animation(.spring(duration: 0.2), value: isFollowingLocation)
                     }
                     .glassEffect(.regular.interactive(), in: Circle())
                     .disabled(isManualMode)
@@ -209,14 +219,6 @@ struct ContentView: View {
                     .padding(.top, 8)
                 }
                 Spacer()
-            }
-
-            // ルート情報バー
-            if let route, !isManualMode {
-                VStack {
-                    Spacer()
-                    routeInfoBar(route: route)
-                }
             }
 
             // ルート計算中インジケーター
@@ -277,7 +279,7 @@ struct ContentView: View {
                         .background(.ultraThinMaterial)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                         .padding(.trailing, 6)
-                        .padding(.bottom, route != nil && !isManualMode ? 76 : 6)
+                        .padding(.bottom, 6)
                 }
             }
         }
@@ -288,49 +290,6 @@ struct ContentView: View {
                 to: nil, from: nil, for: nil
             )
         })
-    }
-
-    // MARK: - ルート情報バー
-
-    private func routeInfoBar(route: MKRoute) -> some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label(route.expectedTravelTime.formattedWalkTime, systemImage: "figure.walk")
-                    .font(.headline)
-                Text(String(format: "%.0fm", route.distance))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if let exit = selectedExit {
-                Text(exit.isStationNode ? "駅入口" : "\(exit.displayRef)番出口")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-            }
-            Spacer()
-            Button {
-                selectedExit = nil
-                self.route = nil
-                // カメラを元に戻す
-                if let coord = searchCoordinate {
-                    cameraPosition = .region(MKCoordinateRegion(
-                        center: coord,
-                        latitudinalMeters: 600,
-                        longitudinalMeters: 600
-                    ))
-                }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
     }
 
     // MARK: - リスト（ScrollView でコンテンツ量に合わせて縮む）
@@ -483,26 +442,6 @@ struct ContentView: View {
         isSelected ? .green : .yellow
     }
 
-    private func toggleHeadingFollow() {
-        isFollowingWithHeading.toggle()
-        if isFollowingWithHeading {
-            updateHeadingCamera()
-        } else if let coord = locationManager.location?.coordinate {
-            // 現在向いている方向を維持したまま通常モードへ
-            let heading: Double = {
-                guard let h = locationManager.heading,
-                      h.trueHeading >= 0 || h.magneticHeading >= 0 else { return 0 }
-                return h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
-            }()
-            cameraPosition = .camera(MapCamera(
-                centerCoordinate: coord,
-                distance: 800,
-                heading: heading,
-                pitch: 0
-            ))
-        }
-    }
-
     /// fetchExits 完了後のカメラ設定（初回は向きを反映、以降は通常 region）
     private func setCameraAfterFetch(center: CLLocationCoordinate2D) {
         if !hasSetInitialHeading,
@@ -511,52 +450,51 @@ struct ContentView: View {
            (h.trueHeading >= 0 || h.magneticHeading >= 0) {
             hasSetInitialHeading = true
             let heading = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
-            cameraPosition = .camera(MapCamera(
+            setCamera(.camera(MapCamera(
                 centerCoordinate: center,
                 distance: 800,
                 heading: heading,
                 pitch: 0
-            ))
+            )))
         } else {
-            cameraPosition = .region(MKCoordinateRegion(
+            setCamera(.region(MKCoordinateRegion(
                 center: center, latitudinalMeters: 600, longitudinalMeters: 600
-            ))
+            )))
         }
+    }
+
+    /// カメラをプログラムで変更（ユーザー操作と区別するためタイムスタンプを記録）
+    private func setCamera(_ position: MapCameraPosition) {
+        lastProgrammaticCameraUpdate = Date()
+        cameraPosition = position
+    }
+
+    /// 現在地フォローモード：現在地に戻りフォロー開始
+    private func recenterOnUser() {
+        guard let coord = locationManager.location?.coordinate else { return }
+        isFollowingLocation = true
+        setCamera(.region(MKCoordinateRegion(
+            center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+        )))
     }
 
     /// heading が遅れて到着した場合のフォールバック（1回だけ）
     private func applyInitialHeadingIfNeeded() {
         guard !hasSetInitialHeading,
               !isManualMode,
-              !isFollowingWithHeading,
+              !isFollowingLocation,
               !exits.isEmpty,
               let coord = locationManager.location?.coordinate,
               let h = locationManager.heading,
               (h.trueHeading >= 0 || h.magneticHeading >= 0) else { return }
         hasSetInitialHeading = true
         let heading = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
-        cameraPosition = .camera(MapCamera(
+        setCamera(.camera(MapCamera(
             centerCoordinate: coord,
             distance: 800,
             heading: heading,
             pitch: 0
-        ))
-    }
-
-    /// 向き追従モード中にカメラを現在地＋ヘディングに追従させる
-    private func updateHeadingCamera() {
-        guard isFollowingWithHeading,
-              let coord = locationManager.location?.coordinate else { return }
-        let heading: Double = {
-            guard let h = locationManager.heading else { return 0 }
-            return h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
-        }()
-        cameraPosition = .camera(MapCamera(
-            centerCoordinate: coord,
-            distance: 800,
-            heading: heading,
-            pitch: 0
-        ))
+        )))
     }
 
     private func toggleManualMode() {
@@ -564,16 +502,16 @@ struct ContentView: View {
         route = nil
         pinnedManualCoordinate = nil
         pinnedLocationName = nil
-        isFollowingWithHeading = false
+        isFollowingLocation = false
         isManualMode.toggle()
         if !isManualMode {
             exits = []
             if let location = locationManager.location {
-                cameraPosition = .region(MKCoordinateRegion(
+                setCamera(.region(MKCoordinateRegion(
                     center: location.coordinate,
                     latitudinalMeters: 600,
                     longitudinalMeters: 600
-                ))
+                )))
                 Task { await fetchExits() }
             }
         } else {
@@ -590,9 +528,9 @@ struct ContentView: View {
             route = nil
         let resetCoord = isManualMode ? pinnedManualCoordinate : locationManager.location?.coordinate
             if let coord = resetCoord {
-                cameraPosition = .region(MKCoordinateRegion(
+                setCamera(.region(MKCoordinateRegion(
                     center: coord, latitudinalMeters: 600, longitudinalMeters: 600
-                ))
+                )))
             }
             return
         }
@@ -603,7 +541,7 @@ struct ContentView: View {
 
         selectedExit = exit
         route = nil
-        isFollowingWithHeading = false
+        isFollowingLocation = false
         isCalculatingRoute = true
 
         let request = MKDirections.Request()
@@ -627,13 +565,13 @@ struct ContentView: View {
                     dx: -rect.width * 0.4,
                     dy: -rect.height * 0.4
                 )
-                cameraPosition = .rect(padded)
+                setCamera(.rect(padded))
             }
         } catch {
             // ルート取得失敗時は出口を中心に表示
-            cameraPosition = .region(MKCoordinateRegion(
+            setCamera(.region(MKCoordinateRegion(
                 center: exit.coordinate, latitudinalMeters: 600, longitudinalMeters: 600
-            ))
+            )))
         }
         isCalculatingRoute = false
     }
@@ -674,13 +612,13 @@ struct ContentView: View {
         locationSearchResults = []
         isSearchingLocation = false
         isManualMode = true
-        isFollowingWithHeading = false
+        isFollowingLocation = false
         pinnedLocationName = item.name
         manualCoordinate = coordinate
         pinnedManualCoordinate = coordinate
-        cameraPosition = .region(MKCoordinateRegion(
+        setCamera(.region(MKCoordinateRegion(
             center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
-        ))
+        )))
         Task { await fetchExits() }
     }
 
@@ -691,7 +629,7 @@ struct ContentView: View {
         }
         selectedExit = nil
         route = nil
-        isFollowingWithHeading = false
+        isFollowingLocation = false
         isLoading = true
         errorMessage = nil
         do {
@@ -824,7 +762,7 @@ struct ExitRow: View {
                         if exit.isStationNode {
                             Image(systemName: "tram.fill")
                                 .font(.system(size: 18))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.black)
                         } else {
                             Text(rankLabel(rank))
                                 .font(.system(size: 17, weight: .bold))
@@ -862,16 +800,6 @@ struct ExitRow: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    if rank == 1 && !isSelected {
-                        Text("最寄り")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue)
-                            .clipShape(Capsule())
-                    }
                     Text(exit.distanceText)
                         .font(.title3)
                         .fontWeight(.semibold)
