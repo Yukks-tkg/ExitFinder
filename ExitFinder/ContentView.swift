@@ -25,6 +25,9 @@ struct ContentView: View {
     // 設定
     @State private var showSettings = false
 
+    // 起動時マップ向き
+    @State private var hasSetInitialHeading = false
+
     // 場所検索
     @State private var searchText = ""
     @State private var locationSearchResults: [MKMapItem] = []
@@ -77,6 +80,7 @@ struct ContentView: View {
             updateHeadingCamera()
         }
         .onReceive(locationManager.$heading) { _ in
+            applyInitialHeadingIfNeeded()
             updateHeadingCamera()
         }
     }
@@ -484,10 +488,59 @@ struct ContentView: View {
         if isFollowingWithHeading {
             updateHeadingCamera()
         } else if let coord = locationManager.location?.coordinate {
-            cameraPosition = .region(MKCoordinateRegion(
-                center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+            // 現在向いている方向を維持したまま通常モードへ
+            let heading: Double = {
+                guard let h = locationManager.heading,
+                      h.trueHeading >= 0 || h.magneticHeading >= 0 else { return 0 }
+                return h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
+            }()
+            cameraPosition = .camera(MapCamera(
+                centerCoordinate: coord,
+                distance: 800,
+                heading: heading,
+                pitch: 0
             ))
         }
+    }
+
+    /// fetchExits 完了後のカメラ設定（初回は向きを反映、以降は通常 region）
+    private func setCameraAfterFetch(center: CLLocationCoordinate2D) {
+        if !hasSetInitialHeading,
+           !isManualMode,
+           let h = locationManager.heading,
+           (h.trueHeading >= 0 || h.magneticHeading >= 0) {
+            hasSetInitialHeading = true
+            let heading = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
+            cameraPosition = .camera(MapCamera(
+                centerCoordinate: center,
+                distance: 800,
+                heading: heading,
+                pitch: 0
+            ))
+        } else {
+            cameraPosition = .region(MKCoordinateRegion(
+                center: center, latitudinalMeters: 600, longitudinalMeters: 600
+            ))
+        }
+    }
+
+    /// heading が遅れて到着した場合のフォールバック（1回だけ）
+    private func applyInitialHeadingIfNeeded() {
+        guard !hasSetInitialHeading,
+              !isManualMode,
+              !isFollowingWithHeading,
+              !exits.isEmpty,
+              let coord = locationManager.location?.coordinate,
+              let h = locationManager.heading,
+              (h.trueHeading >= 0 || h.magneticHeading >= 0) else { return }
+        hasSetInitialHeading = true
+        let heading = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
+        cameraPosition = .camera(MapCamera(
+            centerCoordinate: coord,
+            distance: 800,
+            heading: heading,
+            pitch: 0
+        ))
     }
 
     /// 向き追従モード中にカメラを現在地＋ヘディングに追従させる
@@ -645,18 +698,14 @@ struct ContentView: View {
             exits = try await OverpassService.fetchExits(near: coordinate)
             // 手動モードのとき検索座標をピンとして確定
             if isManualMode { pinnedManualCoordinate = coordinate }
-            cameraPosition = .region(MKCoordinateRegion(
-                center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
-            ))
+            setCameraAfterFetch(center: coordinate)
         } catch {
             // 失敗したら 2 秒待って 1 回だけ自動リトライ（瞬断対策）
             try? await Task.sleep(for: .seconds(2))
             do {
                 exits = try await OverpassService.fetchExits(near: coordinate)
                 if isManualMode { pinnedManualCoordinate = coordinate }
-                cameraPosition = .region(MKCoordinateRegion(
-                    center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
-                ))
+                setCameraAfterFetch(center: coordinate)
             } catch {
                 errorMessage = "データの取得に失敗しました。通信状況を確認してください。"
             }
