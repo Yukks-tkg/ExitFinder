@@ -347,15 +347,21 @@ struct ContentView: View {
                 } else if isManualMode {
                     HStack(spacing: 6) {
                         Image(systemName: "mappin").foregroundStyle(.red)
-                        if let name = pinnedLocationName {
-                            Text(name)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.primary)
-                        } else {
-                            Text("マップをドラッグして場所を指定し「この場所で検索」を押してください")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                        Text("マップをドラッグして場所を指定し「この場所で検索」を押してください")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.red.opacity(0.05))
+                    Divider()
+                } else if let name = pinnedLocationName {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mappin").foregroundStyle(.red)
+                        Text(name)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.primary)
                         Spacer()
                     }
                     .padding(.horizontal, 16)
@@ -660,6 +666,20 @@ struct ContentView: View {
         Task { await fetchExits() }
     }
 
+    /// 座標から住所を取得（逆ジオコーディング）
+    private func reverseGeocode(_ coordinate: CLLocationCoordinate2D) async -> String? {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let placemarks = try? await CLGeocoder().reverseGeocodeLocation(location)
+        guard let placemark = placemarks?.first else { return nil }
+        // 都道府県 + 市区町村 + 町名を組み合わせ（例: "東京都渋谷区桜丘町"）
+        let components = [
+            placemark.administrativeArea,  // 都道府県
+            placemark.locality,            // 市区町村
+            placemark.subLocality          // 町名
+        ].compactMap { $0 }
+        return components.isEmpty ? nil : components.joined()
+    }
+
     private func fetchExits() async {
         guard let coordinate = searchCoordinate else {
             if !isManualMode { locationManager.requestLocation() }
@@ -676,6 +696,10 @@ struct ContentView: View {
             if isManualMode {
                 pinnedManualCoordinate = coordinate
                 isManualMode = false
+                // 検索バー経由でなければ住所を逆ジオコーディングで取得
+                if pinnedLocationName == nil {
+                    pinnedLocationName = await reverseGeocode(coordinate)
+                }
             }
             setCameraAfterFetch(center: coordinate)
         } catch {
@@ -686,6 +710,9 @@ struct ContentView: View {
                 if isManualMode {
                     pinnedManualCoordinate = coordinate
                     isManualMode = false
+                    if pinnedLocationName == nil {
+                        pinnedLocationName = await reverseGeocode(coordinate)
+                    }
                 }
                 setCameraAfterFetch(center: coordinate)
             } catch {
