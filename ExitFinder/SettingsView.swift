@@ -53,12 +53,12 @@ struct TermsOfServiceView: View {
 
     private var termsText: String {
         """
-        ExitFinder 利用規約
+        駅出口マップ 利用規約
 
         最終更新日: 2025年1月
 
         第1条（サービスの内容）
-        ExitFinder（以下「本アプリ」）は、ユーザーの現在地または指定した場所の周辺にある駅出口情報を提供するアプリケーションです。
+        駅出口マップ（以下「本アプリ」）は、ユーザーの現在地または指定した場所の周辺にある駅出口情報を提供するアプリケーションです。
 
         第2条（データの出典）
         本アプリが提供する駅出口情報は OpenStreetMap（OSM）のデータに基づいています。データの正確性・完全性を保証するものではありません。
@@ -91,7 +91,7 @@ struct PrivacyPolicyView: View {
 
     private var privacyText: String {
         """
-        ExitFinder プライバシーポリシー
+        駅出口マップ プライバシーポリシー
 
         最終更新日: 2025年1月
 

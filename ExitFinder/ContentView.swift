@@ -50,7 +50,7 @@ struct ContentView: View {
                     mainView
                 }
             }
-            .navigationTitle("近くの駅出口")
+            .navigationTitle("駅出口マップ")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -78,10 +78,13 @@ struct ContentView: View {
             if newLocation != nil && exits.isEmpty && !isManualMode {
                 Task { await fetchExits() }
             }
-            // フォローモード中は現在地に追従
+            // フォローモード中は現在地に追従（カメラの向きを維持）
             if isFollowingLocation, let coord = newLocation?.coordinate {
-                setCamera(.region(MKCoordinateRegion(
-                    center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+                setCamera(.camera(MapCamera(
+                    centerCoordinate: coord,
+                    distance: 800,
+                    heading: mapCameraHeading,
+                    pitch: 0
                 )))
             }
         }
@@ -412,7 +415,7 @@ struct ContentView: View {
         VStack(spacing: 20) {
             Image(systemName: "location.circle").font(.system(size: 64)).foregroundStyle(.blue)
             Text("現在地の使用を許可してください").font(.headline)
-            Text("近くの駅出口を探すために位置情報が必要です")
+            Text("駅出口マップを使うために位置情報が必要です")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("位置情報を許可する") { locationManager.requestLocation() }
                 .buttonStyle(.borderedProminent)
@@ -424,7 +427,7 @@ struct ContentView: View {
         VStack(spacing: 16) {
             Image(systemName: "location.slash").font(.system(size: 64)).foregroundStyle(.red)
             Text("位置情報が許可されていません").font(.headline)
-            Text("設定 > ExitFinder から位置情報を許可してください")
+            Text("設定 > 駅出口マップ から位置情報を許可してください")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("設定を開く") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -469,13 +472,24 @@ struct ContentView: View {
         cameraPosition = position
     }
 
-    /// 現在地フォローモード：現在地に戻りフォロー開始
+    /// 現在地フォローモード：現在地に戻り、現在の向きに合わせてカメラを設定
     private func recenterOnUser() {
         guard let coord = locationManager.location?.coordinate else { return }
         isFollowingLocation = true
-        setCamera(.region(MKCoordinateRegion(
-            center: coord, latitudinalMeters: 600, longitudinalMeters: 600
-        )))
+        if let h = locationManager.heading,
+           (h.trueHeading >= 0 || h.magneticHeading >= 0) {
+            let heading = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
+            setCamera(.camera(MapCamera(
+                centerCoordinate: coord,
+                distance: 800,
+                heading: heading,
+                pitch: 0
+            )))
+        } else {
+            setCamera(.region(MKCoordinateRegion(
+                center: coord, latitudinalMeters: 600, longitudinalMeters: 600
+            )))
+        }
     }
 
     /// heading が遅れて到着した場合のフォールバック（1回だけ）
