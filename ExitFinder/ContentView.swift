@@ -132,7 +132,7 @@ struct ContentView: View {
 
                 // 手動指定ピン
                 if let pinCoord = pinnedManualCoordinate {
-                    Annotation("指定した場所", coordinate: pinCoord) {
+                    Annotation(pinnedLocationName ?? "指定した場所", coordinate: pinCoord) {
                         VStack(spacing: 0) {
                             ZStack {
                                 Circle()
