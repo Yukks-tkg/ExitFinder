@@ -1,32 +1,54 @@
 import SwiftUI
+import StoreKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.requestReview) private var requestReview
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("法的情報") {
-                    NavigationLink {
-                        TermsOfServiceView()
-                    } label: {
-                        Label("利用規約", systemImage: "doc.text")
+            ZStack(alignment: .bottom) {
+                List {
+                    Section("サポート") {
+                        Button {
+                            requestReview()
+                        } label: {
+                            Label("レビューを書く", systemImage: "star")
+                        }
+                        Button {
+                            if let url = URL(string: "mailto:y.takagi.jp@outlook.jp?subject=駅出口マップへのお問い合わせ") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Label("お問い合わせ", systemImage: "envelope")
+                        }
                     }
-                    NavigationLink {
-                        PrivacyPolicyView()
-                    } label: {
-                        Label("プライバシーポリシー", systemImage: "hand.raised")
+
+                    Section("法的情報") {
+                        NavigationLink {
+                            TermsOfServiceView()
+                        } label: {
+                            Label("利用規約", systemImage: "doc.text")
+                        }
+                        NavigationLink {
+                            PrivacyPolicyView()
+                        } label: {
+                            Label("プライバシーポリシー", systemImage: "hand.raised")
+                        }
                     }
                 }
 
-                Section {
-                    HStack {
-                        Text("バージョン")
-                        Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-")
-                            .foregroundStyle(.secondary)
-                    }
+                // フッター：バージョン情報
+                VStack(spacing: 4) {
+                    Text("駅出口マップ \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-")")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("© 2026 Yuki Takagi")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 32)
             }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)

@@ -29,6 +29,9 @@ struct ContentView: View {
     // 起動時マップ向き
     @State private var hasSetInitialHeading = false
 
+    // 初回検索完了フラグ（起動直後の「見つかりませんでした」誤表示を防ぐ）
+    @State private var hasFetchedOnce = false
+
     // 場所検索
     @State private var searchText = ""
     @State private var locationSearchResults: [MKMapItem] = []
@@ -382,7 +385,7 @@ struct ContentView: View {
                         Text(error)
                             .foregroundStyle(.red)
                             .padding(16)
-                    } else if exits.isEmpty {
+                    } else if exits.isEmpty && hasFetchedOnce {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("近くに駅出口が見つかりませんでした").foregroundStyle(.secondary)
                             if let loc = locationManager.location {
@@ -719,6 +722,7 @@ struct ContentView: View {
                 errorMessage = "データの取得に失敗しました。通信状況を確認してください。"
             }
         }
+        hasFetchedOnce = true
         isLoading = false
     }
 }
