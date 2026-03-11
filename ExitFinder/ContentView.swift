@@ -388,12 +388,14 @@ struct ContentView: View {
                         }
                         .padding(16)
                     } else {
+                        let hasOtherExits = exits.contains(where: { !$0.isStationNode })
                         ForEach(Array(exits.enumerated()), id: \.element.id) { index, exit in
                             ExitRow(
                                 exit: exit,
                                 rank: index + 1,
                                 isSelected: selectedExit?.id == exit.id,
-                                isCalculating: isCalculatingRoute && selectedExit?.id == exit.id
+                                isCalculating: isCalculatingRoute && selectedExit?.id == exit.id,
+                                hasOtherExits: hasOtherExits
                             ) {
                                 Task { await calculateRoute(to: exit) }
                             }
@@ -549,7 +551,7 @@ struct ContentView: View {
         if selectedExit?.id == exit.id {
             selectedExit = nil
             route = nil
-        let resetCoord = isManualMode ? pinnedManualCoordinate : locationManager.location?.coordinate
+            let resetCoord = pinnedManualCoordinate ?? locationManager.location?.coordinate
             if let coord = resetCoord {
                 setCamera(.region(MKCoordinateRegion(
                     center: coord, latitudinalMeters: 600, longitudinalMeters: 600
@@ -558,24 +560,37 @@ struct ContentView: View {
             return
         }
 
-        // 手動モードはピン確定座標、GPSモードは現在地を出発地にする
-        let userCoord = isManualMode ? pinnedManualCoordinate : locationManager.location?.coordinate
-        guard let userCoord else { return }
-
         selectedExit = exit
         route = nil
         isFollowingLocation = false
         isCalculatingRoute = true
 
         let request = MKDirections.Request()
-        request.source = MKMapItem(
-            location: CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude),
-            address: nil
-        )
-        request.destination = MKMapItem(
-            location: CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude),
-            address: nil
-        )
+        if let pinCoord = pinnedManualCoordinate {
+            // 検索モード：出口 → 目的地（ピン）のルート
+            request.source = MKMapItem(
+                location: CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude),
+                address: nil
+            )
+            request.destination = MKMapItem(
+                location: CLLocation(latitude: pinCoord.latitude, longitude: pinCoord.longitude),
+                address: nil
+            )
+        } else {
+            // GPSモード：現在地 → 出口のルート
+            guard let userCoord = locationManager.location?.coordinate else {
+                isCalculatingRoute = false
+                return
+            }
+            request.source = MKMapItem(
+                location: CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude),
+                address: nil
+            )
+            request.destination = MKMapItem(
+                location: CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude),
+                address: nil
+            )
+        }
         request.transportType = .walking
 
         do {
@@ -776,6 +791,7 @@ struct ExitRow: View {
     let rank: Int
     let isSelected: Bool
     let isCalculating: Bool
+    let hasOtherExits: Bool  // 番号付き出口が他にあるか
     let action: () -> Void
 
     var body: some View {
@@ -809,10 +825,10 @@ struct ExitRow: View {
 
                     // メインラベル
                     if exit.isStationNode {
-                        // 駅ノード
+                        // 駅ノード（他に出口がなければ primary、あれば secondary）
                         Text("駅入口")
                             .font(.headline)
-                            .foregroundStyle(isSelected ? .green : .secondary)
+                            .foregroundStyle(isSelected ? .green : (hasOtherExits ? .secondary : .primary))
                     } else if let ref = exit.ref {
                         // ref あり → "A5b出口" のように表示
                         Text("\(ref)番出口")
