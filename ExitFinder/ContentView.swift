@@ -217,7 +217,6 @@ struct ContentView: View {
                             .animation(.spring(duration: 0.2), value: isFollowingLocation)
                     }
                     .glassEffect(.regular.interactive(), in: Circle())
-                    .disabled(isManualMode)
                     .padding(.trailing, 8)
                     .padding(.top, 8)
                 }
@@ -475,6 +474,16 @@ struct ContentView: View {
     /// 現在地フォローモード：現在地に戻り、現在の向きに合わせてカメラを設定
     private func recenterOnUser() {
         guard let coord = locationManager.location?.coordinate else { return }
+        // ピンモード中なら解除して現在地で再検索
+        if isManualMode {
+            selectedExit = nil
+            route = nil
+            pinnedManualCoordinate = nil
+            pinnedLocationName = nil
+            isManualMode = false
+            exits = []
+            Task { await fetchExits() }
+        }
         isFollowingLocation = true
         if let h = locationManager.heading,
            (h.trueHeading >= 0 || h.magneticHeading >= 0) {
@@ -648,15 +657,21 @@ struct ContentView: View {
         errorMessage = nil
         do {
             exits = try await OverpassService.fetchExits(near: coordinate)
-            // 手動モードのとき検索座標をピンとして確定
-            if isManualMode { pinnedManualCoordinate = coordinate }
+            // 手動モードのとき検索座標をピンとして確定し、ピンモードを終了
+            if isManualMode {
+                pinnedManualCoordinate = coordinate
+                isManualMode = false
+            }
             setCameraAfterFetch(center: coordinate)
         } catch {
             // 失敗したら 2 秒待って 1 回だけ自動リトライ（瞬断対策）
             try? await Task.sleep(for: .seconds(2))
             do {
                 exits = try await OverpassService.fetchExits(near: coordinate)
-                if isManualMode { pinnedManualCoordinate = coordinate }
+                if isManualMode {
+                    pinnedManualCoordinate = coordinate
+                    isManualMode = false
+                }
                 setCameraAfterFetch(center: coordinate)
             } catch {
                 errorMessage = "データの取得に失敗しました。通信状況を確認してください。"
