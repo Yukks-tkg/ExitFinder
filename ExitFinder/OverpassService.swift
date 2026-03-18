@@ -29,8 +29,8 @@ struct OverpassService {
         let coordinate: CLLocationCoordinate2D
     }
     private static var cache: CacheEntry?
-    private static let cacheDuration: TimeInterval = 120
-    private static let cacheDistanceThreshold: Double = 100
+    private static let cacheDuration: TimeInterval = 300
+    private static let cacheDistanceThreshold: Double = 300
 
     static func fetchExits(near coordinate: CLLocationCoordinate2D, radius: Int = 500) async throws -> [StationExit] {
         let userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
@@ -55,7 +55,7 @@ struct OverpassService {
         ) -> .nodes;
         .nodes out body;
         relation[public_transport=stop_area](bn.nodes);
-        out body;
+        out;
         """
 
         // 全エンドポイントに並列リクエスト → 最初に成功したものを採用
