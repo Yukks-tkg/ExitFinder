@@ -51,6 +51,7 @@ struct OverpassService {
         (
           node[railway=subway_entrance](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
           node[railway=entrance](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
+          node[railway=train_station_entrance](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
           node[railway=station](around:\(radius),\(coordinate.latitude),\(coordinate.longitude));
         ) -> .nodes;
         .nodes out body;
@@ -134,19 +135,32 @@ struct OverpassService {
                 let railwayType = element.tags["railway"] ?? ""
                 let isStation  = railwayType == "station"
                 let isEntrance = railwayType == "entrance" || railwayType == "subway_entrance"
-                guard isEntrance || isStation else { return nil }
+                let isTrainEntrance = railwayType == "train_station_entrance"
+                guard isEntrance || isTrainEntrance || isStation else { return nil }
 
                 let dist = userLocation.distance(from: CLLocation(latitude: lat, longitude: lon))
 
                 let ownName = element.tags["name:ja"] ?? element.tags["name"] ?? ""
-                let stationName = nodeToStationName[element.id]
-                    ?? (ownName == "駅" || ownName.isEmpty ? nil : ownName)
-                    ?? "付近の駅"
+                // JR改札口の名前をきれいに整形（例: "JR秋葉原駅;電気街改札" → "電気街改札"）
+                let cleanedName: String = {
+                    if isTrainEntrance, ownName.contains(";") {
+                        return ownName.components(separatedBy: ";").last ?? ownName
+                    }
+                    return ownName
+                }()
+                let stationName: String = {
+                    if isTrainEntrance, ownName.contains(";") {
+                        return ownName.components(separatedBy: ";").first ?? "付近の駅"
+                    }
+                    return nodeToStationName[element.id]
+                        ?? (ownName == "駅" || ownName.isEmpty ? nil : ownName)
+                        ?? "付近の駅"
+                }()
 
                 return StationExit(
                     id: element.id,
                     stationName: stationName,
-                    ref: isEntrance ? element.tags["ref"] : nil,
+                    ref: (isEntrance || isTrainEntrance) ? (element.tags["ref"] ?? (isTrainEntrance ? cleanedName : nil)) : nil,
                     coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon),
                     distance: dist,
                     isStationNode: isStation
