@@ -32,6 +32,17 @@ struct ContentView: View {
     // 初回検索完了フラグ（起動直後の「見つかりませんでした」誤表示を防ぐ）
     @State private var hasFetchedOnce = false
 
+    // ローディングメッセージのローテーション
+    private let loadingMessages = [
+        "出口を探しています...",
+        "地図データを確認中...",
+        "少々お待ちください...",
+        "周辺の駅を確認中...",
+        "出口情報を読み込み中...",
+        "通信中..."
+    ]
+    @State private var loadingMessageIndex = 0
+
     // 場所検索
     @State private var searchText = ""
     @State private var locationSearchResults: [MKMapItem] = []
@@ -377,7 +388,20 @@ struct ContentView: View {
                     if isLoading {
                         HStack {
                             Spacer()
-                            ProgressView("出口を検索中...")
+                            ProgressView(loadingMessages[loadingMessageIndex])
+                                .onAppear {
+                                    loadingMessageIndex = 0
+                                }
+                                .task {
+                                    while isLoading {
+                                        try? await Task.sleep(for: .seconds(2))
+                                        if isLoading {
+                                            withAnimation(.easeInOut(duration: 0.4)) {
+                                                loadingMessageIndex = (loadingMessageIndex + 1) % loadingMessages.count
+                                            }
+                                        }
+                                    }
+                                }
                             Spacer()
                         }
                         .padding(.vertical, 20)
