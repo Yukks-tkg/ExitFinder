@@ -93,7 +93,7 @@ struct ContentView: View {
         }
         .onAppear { locationManager.requestLocation() }
         .onChange(of: locationManager.location) { _, newLocation in
-            if newLocation != nil && exits.isEmpty && !isManualMode {
+            if newLocation != nil && exits.isEmpty && !isManualMode && pinnedManualCoordinate == nil {
                 Task { await fetchExits() }
             }
             // フォローモード中は現在地に追従（カメラの向きを維持）
@@ -178,8 +178,11 @@ struct ContentView: View {
                     let isSelected = selectedExit?.id == exit.id
                     let annotationLabel: String = {
                         if exit.isStationNode { return exit.stationName }
-                        if let ref = exit.ref  { return "\(ref)番出口" }
-                        return exit.stationName  // ref なし → name 自体が出口名
+                        if let ref = exit.ref {
+                            let hasJapanese = ref.unicodeScalars.contains { $0.value >= 0x3000 }
+                            return hasJapanese ? ref : "\(ref)番出口"
+                        }
+                        return exit.stationName
                     }()
                     Annotation(annotationLabel, coordinate: exit.coordinate) {
                         ZStack {
@@ -274,7 +277,7 @@ struct ContentView: View {
 
                 VStack {
                     Spacer()
-                    Button { Task { await fetchExits() } } label: {
+                    Button { Task { await fetchExits(forceRefresh: true) } } label: {
                         Label("この場所で検索", systemImage: "magnifyingglass")
                             .foregroundStyle(.black)
                     }
@@ -355,6 +358,7 @@ struct ContentView: View {
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             if index < locationSearchResults.count - 1 {
@@ -690,7 +694,7 @@ struct ContentView: View {
         setCamera(.region(MKCoordinateRegion(
             center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600
         )))
-        Task { await fetchExits() }
+        Task { await fetchExits(forceRefresh: true) }
     }
 
     /// 座標から住所を取得（逆ジオコーディング）
@@ -707,7 +711,7 @@ struct ContentView: View {
         return components.isEmpty ? nil : components.joined()
     }
 
-    private func fetchExits() async {
+    private func fetchExits(forceRefresh: Bool = false) async {
         guard let coordinate = searchCoordinate else {
             if !isManualMode { locationManager.requestLocation() }
             return
@@ -718,7 +722,7 @@ struct ContentView: View {
         isLoading = true
         errorMessage = nil
         do {
-            exits = try await OverpassService.fetchExits(near: coordinate)
+            exits = try await OverpassService.fetchExits(near: coordinate, forceRefresh: forceRefresh)
             // 手動モードのとき検索座標をピンとして確定し、ピンモードを終了
             if isManualMode {
                 pinnedManualCoordinate = coordinate
@@ -733,7 +737,7 @@ struct ContentView: View {
             // 失敗したら 2 秒待って 1 回だけ自動リトライ（瞬断対策）
             try? await Task.sleep(for: .seconds(2))
             do {
-                exits = try await OverpassService.fetchExits(near: coordinate)
+                exits = try await OverpassService.fetchExits(near: coordinate, forceRefresh: forceRefresh)
                 if isManualMode {
                     pinnedManualCoordinate = coordinate
                     isManualMode = false
@@ -885,8 +889,9 @@ struct ExitRow: View {
                             .font(.headline)
                             .foregroundStyle(isSelected ? .green : (hasOtherExits ? .secondary : .primary))
                     } else if let ref = exit.ref {
-                        // ref あり → "A5b出口" のように表示
-                        Text("\(ref)番出口")
+                        // ref あり → 数字/英字なら "A5b番出口"、日本語なら改札名そのまま
+                        let hasJapanese = ref.unicodeScalars.contains { $0.value >= 0x3000 }
+                        Text(hasJapanese ? ref : "\(ref)番出口")
                             .font(.headline)
                             .foregroundStyle(isSelected ? .green : .primary)
                     } else {

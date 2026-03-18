@@ -1,5 +1,9 @@
 import CoreLocation
 
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 enum OverpassError: Error {
     case invalidURL
     case noData
@@ -32,11 +36,12 @@ struct OverpassService {
     private static let cacheDuration: TimeInterval = 300
     private static let cacheDistanceThreshold: Double = 300
 
-    static func fetchExits(near coordinate: CLLocationCoordinate2D, radius: Int = 500) async throws -> [StationExit] {
+    static func fetchExits(near coordinate: CLLocationCoordinate2D, radius: Int = 500, forceRefresh: Bool = false) async throws -> [StationExit] {
         let userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
 
-        // キャッシュヒット確認
-        if let cached = cache,
+        // キャッシュヒット確認（forceRefresh 時はスキップ）
+        if !forceRefresh,
+           let cached = cache,
            Date().timeIntervalSince(cached.timestamp) < cacheDuration,
            userLocation.distance(from: CLLocation(
                latitude: cached.coordinate.latitude,
@@ -138,6 +143,14 @@ struct OverpassService {
                 let isTrainEntrance = railwayType == "train_station_entrance"
                 guard isEntrance || isTrainEntrance || isStation else { return nil }
 
+                // train_station_entrance で名前もrefもないノードはスキップ
+                if isTrainEntrance {
+                    let hasRef = element.tags["ref"]?.nilIfEmpty != nil
+                    let hasName = (element.tags["name:ja"] ?? element.tags["name"] ?? "").contains(";")
+                        || (element.tags["name:ja"] ?? element.tags["name"] ?? "").nilIfEmpty != nil
+                    if !hasRef && !hasName { return nil }
+                }
+
                 let dist = userLocation.distance(from: CLLocation(latitude: lat, longitude: lon))
 
                 let ownName = element.tags["name:ja"] ?? element.tags["name"] ?? ""
@@ -160,7 +173,7 @@ struct OverpassService {
                 return StationExit(
                     id: element.id,
                     stationName: stationName,
-                    ref: (isEntrance || isTrainEntrance) ? (element.tags["ref"] ?? (isTrainEntrance ? cleanedName : nil)) : nil,
+                    ref: (isEntrance || isTrainEntrance) ? (element.tags["ref"]?.nilIfEmpty ?? (isTrainEntrance ? cleanedName.nilIfEmpty : nil)) : nil,
                     coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon),
                     distance: dist,
                     isStationNode: isStation
@@ -168,10 +181,23 @@ struct OverpassService {
             }
             .sorted { $0.distance < $1.distance }
 
+        // 同じ出口名で50m以内のノードは重複とみなし、最も近いものだけ残す
+        var deduped: [StationExit] = []
+        for exit in sorted {
+            let isDuplicate = deduped.contains { existing in
+                guard let existingRef = existing.ref, let exitRef = exit.ref else { return false }
+                guard existingRef == exitRef else { return false }
+                let loc1 = CLLocation(latitude: existing.coordinate.latitude, longitude: existing.coordinate.longitude)
+                let loc2 = CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude)
+                return loc1.distance(from: loc2) < 50
+            }
+            if !isDuplicate { deduped.append(exit) }
+        }
+
         // 具体的な出口ノードが1件以上あれば駅入口エリアを除外、
         // 出口ノードがまったくない場合のみフォールバックとして残す
-        let hasEntrances = sorted.contains { !$0.isStationNode }
-        return (hasEntrances ? sorted.filter { !$0.isStationNode } : sorted)
+        let hasEntrances = deduped.contains { !$0.isStationNode }
+        return (hasEntrances ? deduped.filter { !$0.isStationNode } : deduped)
             .prefix(10)
             .map { $0 }
     }
