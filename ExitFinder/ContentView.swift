@@ -2,6 +2,10 @@ import SwiftUI
 import CoreLocation
 import MapKit
 
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 struct ContentView: View {
     @StateObject private var locationManager = LocationManager()
     @State private var exits: [StationExit] = []
@@ -219,7 +223,7 @@ struct ContentView: View {
                             .frame(width: 44, height: 44)
                             .animation(.spring(duration: 0.2), value: isManualMode)
                     }
-                    .glassEffect(.regular.interactive(), in: Circle())
+                    .background(.ultraThinMaterial, in: Circle())
                     .padding(.leading, 8)
                     .padding(.top, 8)
                     Spacer()
@@ -230,7 +234,7 @@ struct ContentView: View {
                             .frame(width: 44, height: 44)
                             .animation(.spring(duration: 0.2), value: isFollowingLocation)
                     }
-                    .glassEffect(.regular.interactive(), in: Circle())
+                    .background(.ultraThinMaterial, in: Circle())
                     .padding(.trailing, 8)
                     .padding(.top, 8)
                 }
@@ -274,7 +278,7 @@ struct ContentView: View {
                         Label("この場所で検索", systemImage: "magnifyingglass")
                             .foregroundStyle(.black)
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.borderedProminent)
                     .tint(.yellow)
                     .controlSize(.small)
                     .fixedSize()
@@ -338,7 +342,7 @@ struct ContentView: View {
                                         Text(item.name ?? "不明な場所")
                                             .font(.headline)
                                             .foregroundStyle(.primary)
-                                        if let address = item.addressRepresentations?.fullAddress(includingRegion: true, singleLine: true) {
+                                        if let address = [item.placemark.administrativeArea, item.placemark.locality, item.placemark.subLocality].compactMap({ $0 }).joined().nilIfEmpty {
                                             Text(address)
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
@@ -601,28 +605,24 @@ struct ContentView: View {
         let request = MKDirections.Request()
         if let pinCoord = pinnedManualCoordinate {
             // 検索モード：出口 → 目的地（ピン）のルート
-            request.source = MKMapItem(
-                location: CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude),
-                address: nil
-            )
-            request.destination = MKMapItem(
-                location: CLLocation(latitude: pinCoord.latitude, longitude: pinCoord.longitude),
-                address: nil
-            )
+            request.source = MKMapItem(placemark: MKPlacemark(
+                coordinate: exit.coordinate
+            ))
+            request.destination = MKMapItem(placemark: MKPlacemark(
+                coordinate: pinCoord
+            ))
         } else {
             // GPSモード：現在地 → 出口のルート
             guard let userCoord = locationManager.location?.coordinate else {
                 isCalculatingRoute = false
                 return
             }
-            request.source = MKMapItem(
-                location: CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude),
-                address: nil
-            )
-            request.destination = MKMapItem(
-                location: CLLocation(latitude: exit.coordinate.latitude, longitude: exit.coordinate.longitude),
-                address: nil
-            )
+            request.source = MKMapItem(placemark: MKPlacemark(
+                coordinate: userCoord
+            ))
+            request.destination = MKMapItem(placemark: MKPlacemark(
+                coordinate: exit.coordinate
+            ))
         }
         request.transportType = .walking
 
@@ -678,7 +678,7 @@ struct ContentView: View {
             #selector(UIResponder.resignFirstResponder),
             to: nil, from: nil, for: nil
         )
-        let coordinate = item.location.coordinate
+        let coordinate = item.placemark.coordinate
         // searchText はそのまま保持（ユーザーが自分で消す）
         locationSearchResults = []
         isSearchingLocation = false
