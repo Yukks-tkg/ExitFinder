@@ -143,11 +143,11 @@ struct OverpassService {
                 let isTrainEntrance = railwayType == "train_station_entrance"
                 guard isEntrance || isTrainEntrance || isStation else { return nil }
 
-                // train_station_entrance で名前もrefもないノードはスキップ
-                if isTrainEntrance {
+                // 名前もrefもないノードはスキップ（subway_entrance / entrance / train_station_entrance 共通）
+                if isEntrance || isTrainEntrance {
                     let hasRef = element.tags["ref"]?.nilIfEmpty != nil
-                    let hasName = (element.tags["name:ja"] ?? element.tags["name"] ?? "").contains(";")
-                        || (element.tags["name:ja"] ?? element.tags["name"] ?? "").nilIfEmpty != nil
+                    let rawName = element.tags["name:ja"] ?? element.tags["name"] ?? ""
+                    let hasName = rawName.contains(";") || rawName.nilIfEmpty != nil
                     if !hasRef && !hasName { return nil }
                 }
 
