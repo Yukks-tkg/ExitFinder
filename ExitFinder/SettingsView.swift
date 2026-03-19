@@ -4,11 +4,45 @@ import StoreKit
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.requestReview) private var requestReview
+    @State private var tipStore = TipStore.shared
+    @State private var showThanks = false
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
                 List {
+                    Section {
+                        if tipStore.products.isEmpty {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                Spacer()
+                            }
+                        } else {
+                            ForEach(tipStore.products, id: \.id) { product in
+                                Button {
+                                    Task {
+                                        await tipStore.purchase(product)
+                                    }
+                                } label: {
+                                    HStack {
+                                        Text(product.displayName)
+                                            .foregroundStyle(.primary)
+                                        Spacer()
+                                        Text(product.displayPrice)
+                                            .foregroundStyle(.primary)
+                                    }
+                                }
+                                .disabled(tipStore.isPurchasing)
+                            }
+                        }
+                    } header: {
+                        Text("開発を応援する☕️")
+                    } footer: {
+                        Text("ご支援は開発の継続につながります。ありがとうございます🙏")
+                            .font(.caption)
+                    }
+
                     Section("サポート") {
                         Button {
                             requestReview()
@@ -56,6 +90,17 @@ struct SettingsView: View {
             }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("ありがとうございます🍵", isPresented: $showThanks) {
+                Button("閉じる", role: .cancel) {}
+            } message: {
+                Text("ご支援いただき、ありがとうございます！引き続き開発を頑張ります。")
+            }
+            .onChange(of: tipStore.purchaseSuccess) { _, success in
+                if success {
+                    showThanks = true
+                    tipStore.purchaseSuccess = false
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("閉じる") { dismiss() }
