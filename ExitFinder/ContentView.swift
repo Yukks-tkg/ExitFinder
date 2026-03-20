@@ -30,6 +30,9 @@ struct ContentView: View {
     // 設定
     @State private var showSettings = false
 
+    // コピー完了トースト
+    @State private var showCopiedToast = false
+
     // 起動時マップ向き
     @State private var hasSetInitialHeading = false
 
@@ -89,6 +92,18 @@ struct ContentView: View {
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "行きたい場所を検索")
             .task(id: searchText) {
                 await performLocationSearch()
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showCopiedToast {
+                Text("コピーしました")
+                    .font(.subheadline)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(radius: 4)
+                    .padding(.bottom, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .onAppear { locationManager.requestLocation() }
@@ -353,8 +368,6 @@ struct ContentView: View {
                                         }
                                     }
                                     Spacer()
-                                    Image(systemName: "arrow.forward.circle")
-                                        .foregroundStyle(.secondary)
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
@@ -385,10 +398,25 @@ struct ContentView: View {
                             .fontWeight(.medium)
                             .foregroundStyle(.primary)
                         Spacer()
+                        Image(systemName: "doc.on.doc")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(Color.red.opacity(0.05))
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        UIPasteboard.general.string = name
+                        withAnimation {
+                            showCopiedToast = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            withAnimation {
+                                showCopiedToast = false
+                            }
+                        }
+                    }
                     Divider()
                 }
 
