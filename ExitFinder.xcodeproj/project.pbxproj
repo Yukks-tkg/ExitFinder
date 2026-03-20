@@ -400,7 +400,7 @@
 				DEVELOPMENT_TEAM = 2HNQAJKUD5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "駅出入口検索ナビ";
+				INFOPLIST_KEY_CFBundleDisplayName = "駅出口マップ";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "近くの駅出口を探すために現在地を使用します";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -439,7 +439,7 @@
 				DEVELOPMENT_TEAM = 2HNQAJKUD5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "駅出入口検索ナビ";
+				INFOPLIST_KEY_CFBundleDisplayName = "駅出口マップ";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "近くの駅出口を探すために現在地を使用します";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
