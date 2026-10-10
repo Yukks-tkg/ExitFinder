@@ -37,48 +37,52 @@ struct SettingsView: View {
                             }
                         }
                     } header: {
-                        Text("開発を応援する☕️")
+                        Text(L10n.text("support.tip_title"))
                     } footer: {
-                        Text("ご支援は開発の継続につながります。ありがとうございます🙏")
+                        Text(L10n.text("support.tip_body"))
                             .font(.caption)
                     }
 
-                    Section("サポート") {
+                    Section(L10n.text("support.title")) {
                         Button {
                             requestReview()
                         } label: {
-                            Label("レビューを書く", systemImage: "star")
+                            Label(L10n.text("support.review"), systemImage: "star")
                         }
                         Button {
-                            if let url = URL(string: "mailto:y.takagi.jp@outlook.jp?subject=駅出口マップへのお問い合わせ") {
+                            var contact = URLComponents()
+                            contact.scheme = "mailto"
+                            contact.path = "y.takagi.jp@outlook.jp"
+                            contact.queryItems = [URLQueryItem(name: "subject", value: L10n.text("support.email_subject"))]
+                            if let url = contact.url {
                                 UIApplication.shared.open(url)
                             }
                         } label: {
-                            Label("お問い合わせ", systemImage: "envelope")
+                            Label(L10n.text("support.contact"), systemImage: "envelope")
                         }
                     }
 
-                    Section("法的情報") {
+                    Section(L10n.text("legal.title")) {
                         Button {
                             if let url = URL(string: "https://immense-engineer-7f8.notion.site/31f0dee3bb098035867afb1858d4f245?pvs=74") {
                                 UIApplication.shared.open(url)
                             }
                         } label: {
-                            Label("利用規約", systemImage: "doc.text")
+                            Label(L10n.text("legal.terms"), systemImage: "doc.text")
                         }
                         Button {
                             if let url = URL(string: "https://immense-engineer-7f8.notion.site/31f0dee3bb0980709680dcd27ebcb89f") {
                                 UIApplication.shared.open(url)
                             }
                         } label: {
-                            Label("プライバシーポリシー", systemImage: "hand.raised")
+                            Label(L10n.text("legal.privacy"), systemImage: "hand.raised")
                         }
                     }
                 }
 
                 // フッター：バージョン情報
                 VStack(spacing: 4) {
-                    Text("駅出口マップ \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-")")
+                    Text(L10n.format("app.version", [Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"]))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("© 2026 Yuki Takagi")
@@ -88,12 +92,12 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 32)
             }
-            .navigationTitle("設定")
+            .navigationTitle(L10n.text("settings.title"))
             .navigationBarTitleDisplayMode(.inline)
-            .alert("ありがとうございます🍵", isPresented: $showThanks) {
-                Button("閉じる", role: .cancel) {}
+            .alert(L10n.text("support.thanks_title"), isPresented: $showThanks) {
+                Button(L10n.text("action.close"), role: .cancel) {}
             } message: {
-                Text("ご支援いただき、ありがとうございます！引き続き開発を頑張ります。")
+                Text(L10n.text("support.thanks_body"))
             }
             .onChange(of: tipStore.purchaseSuccess) { _, success in
                 if success {
@@ -103,7 +107,7 @@ struct SettingsView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("閉じる") { dismiss() }
+                    Button(L10n.text("action.close")) { dismiss() }
                 }
             }
         }

@@ -9,7 +9,7 @@ struct StationExit: Identifiable {
     var isStationNode: Bool = false  // true = 駅ノード自体（出口ではなく駅エリア全体）
 
     var displayRef: String {
-        ref ?? "出口"
+        ref ?? L10n.text("exit.generic")
     }
 
     var distanceText: String {

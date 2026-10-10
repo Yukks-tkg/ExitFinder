@@ -163,11 +163,11 @@ struct OverpassService {
                 }()
                 let stationName: String = {
                     if isTrainEntrance, ownName.contains(";") {
-                        return ownName.components(separatedBy: ";").first ?? "付近の駅"
+                        return ownName.components(separatedBy: ";").first ?? L10n.text("station.nearby")
                     }
                     return nodeToStationName[element.id]
                         ?? (ownName == "駅" || ownName.isEmpty ? nil : ownName)
-                        ?? "付近の駅"
+                        ?? L10n.text("station.nearby")
                 }()
 
                 return StationExit(

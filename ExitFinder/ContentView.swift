@@ -41,12 +41,12 @@ struct ContentView: View {
 
     // ローディングメッセージのローテーション
     private let loadingMessages = [
-        "出口を探しています...",
-        "地図データを確認中...",
-        "少々お待ちください...",
-        "周辺の駅を確認中...",
-        "出口情報を読み込み中...",
-        "通信中..."
+        L10n.text("loading.exits"),
+        L10n.text("loading.map"),
+        L10n.text("loading.wait"),
+        L10n.text("loading.stations"),
+        L10n.text("loading.details"),
+        L10n.text("loading.network")
     ]
     @State private var loadingMessageIndex = 0
 
@@ -71,7 +71,7 @@ struct ContentView: View {
                     mainView
                 }
             }
-            .navigationTitle("駅出口マップ")
+            .navigationTitle(L10n.text("app.name"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -89,14 +89,14 @@ struct ContentView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView()
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "行きたい場所を検索")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: L10n.text("search.prompt"))
             .task(id: searchText) {
                 await performLocationSearch()
             }
         }
         .overlay(alignment: .bottom) {
             if showCopiedToast {
-                Text("コピーしました")
+                Text(L10n.text("copy.done"))
                     .font(.subheadline)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
@@ -162,7 +162,7 @@ struct ContentView: View {
 
                 // 手動指定ピン
                 if let pinCoord = pinnedManualCoordinate {
-                    Annotation(pinnedLocationName ?? "指定した場所", coordinate: pinCoord) {
+                    Annotation(pinnedLocationName ?? L10n.text("place.selected"), coordinate: pinCoord) {
                         VStack(spacing: 0) {
                             ZStack {
                                 Circle()
@@ -194,8 +194,7 @@ struct ContentView: View {
                     let annotationLabel: String = {
                         if exit.isStationNode { return exit.stationName }
                         if let ref = exit.ref {
-                            let hasJapanese = ref.unicodeScalars.contains { $0.value >= 0x3000 }
-                            return hasJapanese ? ref : "\(ref)番出口"
+                            return L10n.exitLabel(ref)
                         }
                         return exit.stationName
                     }()
@@ -265,7 +264,7 @@ struct ContentView: View {
                     Spacer()
                     HStack(spacing: 8) {
                         ProgressView()
-                        Text("ルートを計算中...")
+                        Text(L10n.text("route.loading"))
                             .font(.subheadline)
                     }
                     .padding(.horizontal, 16)
@@ -293,7 +292,7 @@ struct ContentView: View {
                 VStack {
                     Spacer()
                     Button { Task { await fetchExits(forceRefresh: true) } } label: {
-                        Label("この場所で検索", systemImage: "magnifyingglass")
+                        Label(L10n.text("search.here"), systemImage: "magnifyingglass")
                             .foregroundStyle(.black)
                     }
                     .buttonStyle(.borderedProminent)
@@ -340,7 +339,7 @@ struct ContentView: View {
                     if locationSearchResults.isEmpty {
                         HStack {
                             Spacer()
-                            Text("候補なし")
+                            Text(L10n.text("search.no_results"))
                                 .foregroundStyle(.secondary)
                                 .font(.subheadline)
                             Spacer()
@@ -357,7 +356,7 @@ struct ContentView: View {
                                         .foregroundStyle(.red)
                                         .frame(width: 40)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(item.name ?? "不明な場所")
+                                        Text(item.name ?? L10n.text("place.unknown"))
                                             .font(.headline)
                                             .foregroundStyle(.primary)
                                         if let address = [item.placemark.administrativeArea, item.placemark.locality, item.placemark.subLocality].compactMap({ $0 }).joined().nilIfEmpty {
@@ -382,7 +381,7 @@ struct ContentView: View {
                 } else if isManualMode {
                     HStack(spacing: 6) {
                         Image(systemName: "mappin").foregroundStyle(.red)
-                        Text("マップをドラッグして場所を指定し「この場所で検索」を押してください")
+                        Text(L10n.text("search.drag_hint"))
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -429,14 +428,14 @@ struct ContentView: View {
                                     loadingMessageIndex = 0
                                 }
                                 .task {
-                                    while isLoading {
-                                        try? await Task.sleep(for: .seconds(2))
-                                        if isLoading {
+                                    await Self.rotateLoadingMessages(
+                                        isLoading: { isLoading },
+                                        advance: {
                                             withAnimation(.easeInOut(duration: 0.4)) {
                                                 loadingMessageIndex = (loadingMessageIndex + 1) % loadingMessages.count
                                             }
                                         }
-                                    }
+                                    )
                                 }
                             Spacer()
                         }
@@ -447,12 +446,12 @@ struct ContentView: View {
                             .padding(16)
                     } else if exits.isEmpty && hasFetchedOnce {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("近くに駅出口が見つかりませんでした").foregroundStyle(.secondary)
+                            Text(L10n.text("exits.none")).foregroundStyle(.secondary)
                             if let loc = locationManager.location {
-                                Text("現在地: \(loc.coordinate.latitude, specifier: "%.5f"), \(loc.coordinate.longitude, specifier: "%.5f")")
+                                Text(L10n.format("location.coordinates", [loc.coordinate.latitude, loc.coordinate.longitude]))
                                     .font(.caption).foregroundStyle(.tertiary)
                             } else {
-                                Text("現在地: 取得中...").font(.caption).foregroundStyle(.tertiary)
+                                Text(L10n.text("location.loading")).font(.caption).foregroundStyle(.tertiary)
                             }
                         }
                         .padding(16)
@@ -484,10 +483,10 @@ struct ContentView: View {
     private var permissionView: some View {
         VStack(spacing: 20) {
             Image(systemName: "location.circle").font(.system(size: 64)).foregroundStyle(.blue)
-            Text("現在地の使用を許可してください").font(.headline)
-            Text("駅出口マップを使うために位置情報が必要です")
+            Text(L10n.text("location.permission_title")).font(.headline)
+            Text(L10n.text("location.permission_body"))
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("位置情報を許可する") { locationManager.requestLocation() }
+            Button(L10n.text("location.allow")) { locationManager.requestLocation() }
                 .buttonStyle(.borderedProminent)
         }
         .padding()
@@ -496,10 +495,10 @@ struct ContentView: View {
     private var deniedView: some View {
         VStack(spacing: 16) {
             Image(systemName: "location.slash").font(.system(size: 64)).foregroundStyle(.red)
-            Text("位置情報が許可されていません").font(.headline)
-            Text("設定 > 駅出口マップ から位置情報を許可してください")
+            Text(L10n.text("location.denied_title")).font(.headline)
+            Text(L10n.text("location.denied_body"))
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("設定を開く") {
+            Button(L10n.text("settings.open")) {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
@@ -739,6 +738,26 @@ struct ContentView: View {
         return components.isEmpty ? nil : components.joined()
     }
 
+    /// Stop the view-owned loop when loading ends or its task is cancelled.
+    @MainActor
+    static func rotateLoadingMessages(
+        isLoading: @MainActor () -> Bool,
+        sleep: @MainActor () async throws -> Void = {
+            try await Task.sleep(for: .seconds(2))
+        },
+        advance: @MainActor () -> Void
+    ) async {
+        while isLoading() && !Task.isCancelled {
+            do {
+                try await sleep()
+            } catch {
+                return
+            }
+            guard isLoading(), !Task.isCancelled else { return }
+            advance()
+        }
+    }
+
     private func fetchExits(forceRefresh: Bool = false) async {
         guard let coordinate = searchCoordinate else {
             if !isManualMode { locationManager.requestLocation() }
@@ -775,7 +794,7 @@ struct ContentView: View {
                 }
                 setCameraAfterFetch(center: coordinate)
             } catch {
-                errorMessage = "データの取得に失敗しました。通信状況を確認してください。"
+                errorMessage = L10n.text("error.fetch")
             }
         }
         hasFetchedOnce = true
@@ -865,9 +884,9 @@ struct HeadingConeShape: Shape {
 private extension TimeInterval {
     var formattedWalkTime: String {
         let minutes = Int(self / 60)
-        if minutes < 1 { return "1分以内" }
-        if minutes < 60 { return "\(minutes)分" }
-        return "\(minutes / 60)時間\(minutes % 60)分"
+        if minutes < 1 { return L10n.text("walk.under_minute") }
+        if minutes < 60 { return L10n.format("walk.minutes", [minutes]) }
+        return L10n.format("walk.hours_minutes", [minutes / 60, minutes % 60])
     }
 }
 
@@ -906,20 +925,19 @@ struct ExitRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     // サブタイトル（駅名 or "駅出口"）
-                    Text(exit.isStationNode || exit.ref != nil ? exit.stationName : "駅出口")
+                    Text(exit.isStationNode || exit.ref != nil ? exit.stationName : L10n.text("exit.station"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
                     // メインラベル
                     if exit.isStationNode {
                         // 駅ノード（他に出口がなければ primary、あれば secondary）
-                        Text("駅入口")
+                        Text(L10n.text("station.entrance"))
                             .font(.headline)
                             .foregroundStyle(isSelected ? .green : (hasOtherExits ? .secondary : .primary))
                     } else if let ref = exit.ref {
                         // ref あり → 数字/英字なら "A5b番出口"、日本語なら改札名そのまま
-                        let hasJapanese = ref.unicodeScalars.contains { $0.value >= 0x3000 }
-                        Text(hasJapanese ? ref : "\(ref)番出口")
+                        Text(L10n.exitLabel(ref))
                             .font(.headline)
                             .foregroundStyle(isSelected ? .green : .primary)
                     } else {
